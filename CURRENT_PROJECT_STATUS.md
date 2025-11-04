@@ -26,6 +26,15 @@
 
 **Max data loss on crash:** ~1 minute
 
+### Phase 1.5: Dataset Shuffling ✅ (NEW!)
+- ✅ Automatic shard shuffling between epochs
+- ✅ Improves generalization and prevents order bias
+- ✅ Uses numpy RNG (reproducible via checkpoints)
+- ✅ Zero performance overhead
+- ✅ Enabled by default for training data
+
+**Benefit:** Better model quality with no speed cost
+
 ### Phase 2: TensorBoard Monitoring ✅
 - ✅ Real-time loss curves (train & validation)
 - ✅ Learning rate schedule tracking

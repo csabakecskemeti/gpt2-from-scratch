@@ -336,6 +336,11 @@ class Trainer:
                     print(f"\n{'='*60}")
                     print(f"🎯 Completed Epoch {self.current_epoch - 1}")
                     print(f"{'='*60}\n")
+                
+                # Reset dataloader with shuffling for new epoch
+                self.train_loader.reset_epoch()
+                if self.master_process:
+                    print(f"🔄 Starting Epoch {self.current_epoch}\n")
             
             t0 = time.time()
             self.is_last_step = (step == max_steps - 1)

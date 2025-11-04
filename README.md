@@ -8,6 +8,7 @@ This project reproduces the GPT-2 model in pytorch and trains it from scratch on
 - **Simplified PyTorch Implementation:** Designed to be accessible and well-commented for ease of understanding.
 - **Smart Checkpointing:** Automatic checkpoint management with resume capability (~1 minute max data loss).
 - **TensorBoard Monitoring:** Real-time training metrics, loss curves, and text generation samples.
+- **Dataset Shuffling:** Automatic shard shuffling between epochs for better generalization.
 - **Customizable Training:** Hyperparameters are configurable via the command line and can be easily modified.
 - **Multi-GPU Training Support:** Training can be performed using multiple GPUs using PyTorch Distributed Data Parallel (DDP).
 
@@ -146,9 +147,9 @@ The purpose of this project was to help the engineers and programmers understand
 
 ## Potential Future Work
 
-1. **Dataset Shuffling:** The current training code does not shuffle the dataset after each epoch. Implementing dataset shuffling between epochs could improve the model's ability to generalize and prevent overfitting to the order of the training data.
+1. **Extended Training:** Experiment with training the model for more epochs to potentially improve performance. Monitor validation loss to determine the optimal number of epochs and implement early stopping if necessary.
 
-2. **Extended Training:** Experiment with training the model for more epochs to potentially improve performance. Monitor validation loss to determine the optimal number of epochs and implement early stopping if necessary.
+2. **Advanced Optimization:** Explore techniques like gradient clipping, different learning rate schedules, or adaptive optimizers to further improve training stability and convergence.
 
 
 ## References:
