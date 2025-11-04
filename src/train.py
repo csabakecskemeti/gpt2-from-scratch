@@ -13,7 +13,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from model import GPT
 from dataloader import DataLoaderLite
-from src.hellaswag_eval import render_example, iterate_examples, get_most_likely_row
+from hellaswag_eval import render_example, iterate_examples, get_most_likely_row
 
 torch.set_float32_matmul_precision('high')    # enable TF32 precision
 

@@ -2,18 +2,26 @@
 
 This project reproduces the GPT-2 model in pytorch and trains it from scratch on the FineWeb-Edu dataset - a high-quality subset of FineWeb dataset tailored for educational content. The goal is to offer a simplified, easy-to-understand PyTorch implementation. Note that this code is intended primarily for educational purposes and is not optimized for speed or production deployment.
 
+> **📌 Current Status:** Training with **bfloat16 precision** using `train_improved.py`. FP8 training materials are in `backup_fp8_future_work/` (on hold due to TransformerEngine installation issues). See [`CURRENT_PROJECT_STATUS.md`](CURRENT_PROJECT_STATUS.md) for details.
+
 ### Key Features
 - **Simplified PyTorch Implementation:** Designed to be accessible and well-commented for ease of understanding.
+- **Smart Checkpointing:** Automatic checkpoint management with resume capability (~1 minute max data loss).
+- **TensorBoard Monitoring:** Real-time training metrics, loss curves, and text generation samples.
 - **Customizable Training:** Hyperparameters are configurable via the command line and can be easily modified.
 - **Multi-GPU Training Support:** Training can be performed using multiple GPUs using PyTorch Distributed Data Parallel (DDP).
 
 
 ## Repository Structure
-- `src/train.py`: Script to train the GPT-2 model with customizable configurations.
+- `src/train_improved.py`: **[ACTIVE]** Enhanced training script with smart checkpointing and TensorBoard monitoring.
+- `src/train.py`: Original training script (reference only).
 - `src/model.py`: Contains the GPT-2 model implementation, including embedding layers, transformer blocks, and output layers.
 - `src/dataloader.py`:  Handles data loading and batching for the model during training.
 - `src/prepare_dataset.py`: Downloads and preprocesses the FineWebEdu dataset. Run this script before starting the training process.
 - `requirements.txt`: Python dependencies required to run the project.
+- `backup_fp8_future_work/`: FP8 training materials (on hold due to TransformerEngine installation issues on ARM64).
+
+**📖 For complete documentation, see [`CURRENT_PROJECT_STATUS.md`](CURRENT_PROJECT_STATUS.md)**
 
 
 ## Getting Started
@@ -31,6 +39,12 @@ You can install all dependencies with:
 pip install -r requirements.txt
 ```
 
+#### For Blackwell (or DGX Spark)
+You need this torch version:
+```bash
+pip3 install -U  torch torchvision --index-url https://download.pytorch.org/whl/cu130
+```
+
 ## Dataset
 
 The GPT-2 model was originally trained on the WebText dataset (not publicly released). For this project, we use the FineWebEdu-10B dataset—a specialized educational subset of the FineWeb dataset. It contains approximately 10 billion tokens focused on high-quality educational content.
@@ -45,17 +59,32 @@ You can start training the GPT-2 model using the following commands:
 
 You can experiment with different training and model config hyperparameters by setting them through the command line. 
 
-- Single-GPU Training:
+- Single-GPU Training (with TensorBoard):
 ```bash
-python train.py --num_epochs=5
+python src/train_improved.py --use_tensorboard --run_name "my_training"
 ```
 
-- Multi-GPU Training (uses Pytorch DDP):
+- Multi-GPU Training (uses PyTorch DDP):
 ```bash
-torchrun --standalone --nproc_per_node=4 train.py    # adjust number of GPUs as per availability
+torchrun --standalone --nproc_per_node=4 src/train_improved.py --use_tensorboard --run_name "my_training"
 ```
 
-For more details on the training process and customizing hyperparameters, refer to the `src/train.py` script.
+- Resume Training from Checkpoint:
+```bash
+python src/train_improved.py --resume latest --use_tensorboard
+```
+
+- Start TensorBoard (in separate terminal):
+```bash
+./start_tensorboard.sh
+# Then open: http://localhost:6006
+```
+
+For more details on the training process and customizing hyperparameters, refer to:
+- **Quick Start:** [`QUICK_START.md`](QUICK_START.md)
+- **Complete Guide:** [`CURRENT_PROJECT_STATUS.md`](CURRENT_PROJECT_STATUS.md)
+- **Checkpointing:** [`CHECKPOINTING_GUIDE.md`](CHECKPOINTING_GUIDE.md)
+- **Monitoring:** [`TENSORBOARD_GUIDE.md`](TENSORBOARD_GUIDE.md)
 
 Training was performed from scratch using multiple GPUs with PyTorch's DDP framework.
 
