@@ -28,17 +28,108 @@ use_torch_compile = False
 
 class CheckpointManager:
     """
-    Manages 3-tier checkpointing system:
-    1. Latest checkpoint (always overwrite for quick resume)
-    2. Rolling checkpoints (keep last N, default 10)
-    3. Epoch checkpoints (keep all)
+    Enhanced checkpoint management system with:
+    1. Latest checkpoint (always overwrite for quick resume) + backup
+    2. Rolling checkpoints (keep last N, default 10) + last rolling backup
+    3. Emergency checkpoints (keep last N, default 10, separate from rolling)
+    4. Epoch checkpoints (keep all)
+    5. Best model (current + backup + previous)
+    
+    Features:
+    - Atomic saves with temporary files (prevents corruption)
+    - Checkpoint validation after saving
+    - Separate cleanup for rolling vs emergency checkpoints
+    - Timestamped emergency checkpoints
+    - Disk space monitoring
     """
-    def __init__(self, checkpoint_dir, keep_last_n=10, master_process=True):
+    def __init__(self, checkpoint_dir, keep_last_n=10, keep_emergency_n=10, master_process=True, 
+                 allow_resume=False):
         self.checkpoint_dir = Path(checkpoint_dir)
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.keep_last_n = keep_last_n
+        self.keep_emergency_n = keep_emergency_n
         self.master_process = master_process
+        self._save_count = 0  # Track number of saves for periodic disk usage reporting
         
+        # Safety check: if checkpoint directory exists and has checkpoints, create new directory
+        # Skip this check if we're resuming from a checkpoint
+        if not allow_resume and self.checkpoint_dir.exists() and self._has_existing_checkpoints():
+            from datetime import datetime
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            new_checkpoint_dir = Path(str(self.checkpoint_dir) + f'_run_{timestamp}')
+            
+            if self.master_process:
+                print(f"\n{'='*80}")
+                print(f"⚠️  CHECKPOINT DIRECTORY PROTECTION")
+                print(f"{'='*80}")
+                print(f"Existing checkpoints detected in: {self.checkpoint_dir}")
+                print(f"To prevent accidental overwrite, using new directory:")
+                print(f"  → {new_checkpoint_dir}")
+                print(f"\n💡 TIP: To resume training and continue using existing checkpoints:")
+                print(f"      python src/train_improved.py --resume latest --use_tensorboard")
+                print(f"{'='*80}\n")
+            
+            self.checkpoint_dir = new_checkpoint_dir
+        
+        # Create directory if it doesn't exist
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    
+    def _has_existing_checkpoints(self):
+        """Check if directory has any existing checkpoint files"""
+        if not self.checkpoint_dir.exists():
+            return False
+        
+        checkpoint_patterns = [
+            'latest.pt',
+            'best_model.pt',
+            'rolling_step_*.pt',
+            'emergency_step_*.pt',
+            'epoch_*.pt'
+        ]
+        
+        for pattern in checkpoint_patterns:
+            if list(self.checkpoint_dir.glob(pattern)):
+                return True
+        
+        return False
+        
+    def _atomic_save(self, checkpoint, final_path):
+        """
+        Save checkpoint atomically using a temporary file.
+        This prevents corruption if training crashes during save.
+        Returns True if successful, False otherwise.
+        """
+        temp_path = Path(str(final_path) + '.tmp')
+        
+        try:
+            # Save to temporary file
+            torch.save(checkpoint, temp_path)
+            
+            # Validate the checkpoint is loadable
+            try:
+                torch.load(temp_path, map_location='cpu', weights_only=False)
+            except Exception as e:
+                print(f'⚠️  Checkpoint validation failed: {e}')
+                if temp_path.exists():
+                    temp_path.unlink()
+                return False
+            
+            # Atomic rename (POSIX guarantees this is atomic)
+            temp_path.rename(final_path)
+            return True
+            
+        except Exception as e:
+            print(f'⚠️  Failed to save checkpoint: {e}')
+            if temp_path.exists():
+                temp_path.unlink()
+            return False
+    
+    def _get_disk_usage(self):
+        """Get total disk usage of checkpoint directory in GB"""
+        total_size = 0
+        for path in self.checkpoint_dir.glob('*.pt'):
+            total_size += path.stat().st_size
+        return total_size / (1024**3)  # Convert to GB
+    
     def save_checkpoint(self, 
                        step, 
                        epoch, 
@@ -50,7 +141,8 @@ class CheckpointManager:
                        val_loader,
                        args_dict,
                        is_best=False,
-                       is_epoch_end=False):
+                       is_epoch_end=False,
+                       is_emergency=False):
         """Save a complete training checkpoint"""
         if not self.master_process:
             return  # Only master process saves checkpoints
@@ -82,9 +174,10 @@ class CheckpointManager:
             'dataloader_state': dataloader_state,
             'args': args_dict,
             'timestamp': time.time(),
+            'checkpoint_type': 'emergency' if is_emergency else 'regular',
         }
         
-        # 1. Always save as latest.pt (for quick resume)
+        # 1. Always save as latest.pt (for quick resume) with backup
         latest_path = self.checkpoint_dir / 'latest.pt'
         latest_backup_path = self.checkpoint_dir / 'latest_backup.pt'
         
@@ -94,38 +187,112 @@ class CheckpointManager:
                 latest_backup_path.unlink()
             latest_path.rename(latest_backup_path)
         
-        torch.save(checkpoint, latest_path)
-        print(f'✓ Saved latest checkpoint: {latest_path}')
+        if self._atomic_save(checkpoint, latest_path):
+            print(f'✓ Saved latest checkpoint: {latest_path}')
+        else:
+            print(f'❌ Failed to save latest checkpoint')
+            # Restore backup if save failed
+            if latest_backup_path.exists() and not latest_path.exists():
+                latest_backup_path.rename(latest_path)
+                print(f'  ↻ Restored from backup')
         
-        # 2. Save as rolling checkpoint (keep last N)
+        # 2a. Save as emergency checkpoint (separate from rolling)
+        if is_emergency:
+            from datetime import datetime
+            timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+            emergency_path = self.checkpoint_dir / f'emergency_step_{step:06d}_{timestamp_str}.pt'
+            
+            if self._atomic_save(checkpoint, emergency_path):
+                print(f'🚨 Saved emergency checkpoint: {emergency_path}')
+                self._cleanup_emergency_checkpoints()
+            else:
+                print(f'❌ Failed to save emergency checkpoint')
+            
+            return  # Emergency checkpoints don't save rolling/epoch/best
+        
+        # 2b. Save as rolling checkpoint (keep last N)
         rolling_path = self.checkpoint_dir / f'rolling_step_{step:06d}.pt'
-        torch.save(checkpoint, rolling_path)
-        print(f'✓ Saved rolling checkpoint: {rolling_path}')
         
-        # Cleanup old rolling checkpoints (keep only last N)
-        self._cleanup_rolling_checkpoints()
+        if self._atomic_save(checkpoint, rolling_path):
+            print(f'✓ Saved rolling checkpoint: {rolling_path}')
+            
+            # Create backup of last rolling checkpoint
+            rolling_backup_path = self.checkpoint_dir / 'rolling_last_backup.pt'
+            if rolling_backup_path.exists():
+                rolling_backup_path.unlink()
+            
+            # Copy the just-saved rolling checkpoint as backup
+            import shutil
+            shutil.copy2(rolling_path, rolling_backup_path)
+            
+            # Cleanup old rolling checkpoints (keep only last N)
+            self._cleanup_rolling_checkpoints()
+        else:
+            print(f'❌ Failed to save rolling checkpoint')
         
         # 3. Save epoch checkpoint (keep all)
         if is_epoch_end:
             epoch_path = self.checkpoint_dir / f'epoch_{epoch:05d}.pt'
-            torch.save(checkpoint, epoch_path)
-            print(f'✓ Saved epoch checkpoint: {epoch_path}')
+            if self._atomic_save(checkpoint, epoch_path):
+                print(f'✓ Saved epoch checkpoint: {epoch_path}')
+            else:
+                print(f'❌ Failed to save epoch checkpoint')
         
-        # 4. Save best model if this is the best so far
+        # 4. Save best model with backup and previous
         if is_best:
             best_path = self.checkpoint_dir / 'best_model.pt'
-            torch.save(checkpoint, best_path)
-            print(f'🏆 Saved best model checkpoint: {best_path}')
+            best_backup_path = self.checkpoint_dir / 'best_model_backup.pt'
+            best_previous_path = self.checkpoint_dir / 'best_model_previous.pt'
+            
+            # Save old best as "previous" before overwriting
+            if best_path.exists():
+                if best_previous_path.exists():
+                    best_previous_path.unlink()
+                import shutil
+                shutil.copy2(best_path, best_previous_path)
+                print(f'  ↻ Backed up previous best model')
+            
+            # Save new best
+            if self._atomic_save(checkpoint, best_path):
+                print(f'🏆 Saved best model checkpoint: {best_path}')
+                
+                # Create backup of current best
+                if best_backup_path.exists():
+                    best_backup_path.unlink()
+                import shutil
+                shutil.copy2(best_path, best_backup_path)
+                print(f'  ✓ Created backup of best model')
+            else:
+                print(f'❌ Failed to save best model')
+        
+        # Print disk usage periodically (every 10 saves)
+        self._save_count += 1
+        if self._save_count % 10 == 0:
+            disk_usage = self._get_disk_usage()
+            num_rolling = len(list(self.checkpoint_dir.glob('rolling_step_*.pt')))
+            num_emergency = len(list(self.checkpoint_dir.glob('emergency_step_*.pt')))
+            num_epoch = len(list(self.checkpoint_dir.glob('epoch_*.pt')))
+            print(f'📦 Checkpoint storage: {disk_usage:.1f} GB ({num_rolling} rolling, {num_emergency} emergency, {num_epoch} epoch)')
     
     def _cleanup_rolling_checkpoints(self):
-        """Keep only the last N rolling checkpoints"""
+        """Keep only the last N rolling checkpoints (does NOT touch emergency checkpoints)"""
         rolling_checkpoints = sorted(self.checkpoint_dir.glob('rolling_step_*.pt'))
         
         if len(rolling_checkpoints) > self.keep_last_n:
             # Remove oldest checkpoints
             for ckpt in rolling_checkpoints[:-self.keep_last_n]:
                 ckpt.unlink()
-                print(f'  Cleaned up old checkpoint: {ckpt.name}')
+                print(f'  🧹 Cleaned up old rolling checkpoint: {ckpt.name}')
+    
+    def _cleanup_emergency_checkpoints(self):
+        """Keep only the last N emergency checkpoints (separate from rolling)"""
+        emergency_checkpoints = sorted(self.checkpoint_dir.glob('emergency_step_*.pt'))
+        
+        if len(emergency_checkpoints) > self.keep_emergency_n:
+            # Remove oldest emergency checkpoints
+            for ckpt in emergency_checkpoints[:-self.keep_emergency_n]:
+                ckpt.unlink()
+                print(f'  🧹 Cleaned up old emergency checkpoint: {ckpt.name}')
     
     def load_checkpoint(self, checkpoint_path, model, optimizer, train_loader, val_loader, device):
         """Load a checkpoint and restore complete training state"""
@@ -195,38 +362,88 @@ class CheckpointManager:
     
     def list_checkpoints(self):
         """List all available checkpoints"""
-        print("\nAvailable checkpoints:")
-        print("-" * 60)
+        print("\n" + "="*80)
+        print("AVAILABLE CHECKPOINTS")
+        print("="*80)
         
-        # Latest checkpoint
+        # Latest checkpoint + backup
+        print("\n📌 Latest Checkpoints:")
+        print("-" * 80)
         latest_path = self.checkpoint_dir / 'latest.pt'
         if latest_path.exists():
             ckpt = torch.load(latest_path, map_location='cpu', weights_only=False)
-            print(f"  latest: step={ckpt['step']}, val_loss={ckpt['val_loss']:.4f}")
+            size_mb = latest_path.stat().st_size / (1024**2)
+            print(f"  latest.pt:        step={ckpt['step']:,}, val_loss={ckpt['val_loss']:.4f}, size={size_mb:.1f}MB")
         
-        # Best checkpoint
+        latest_backup_path = self.checkpoint_dir / 'latest_backup.pt'
+        if latest_backup_path.exists():
+            ckpt = torch.load(latest_backup_path, map_location='cpu', weights_only=False)
+            size_mb = latest_backup_path.stat().st_size / (1024**2)
+            print(f"  latest_backup.pt: step={ckpt['step']:,}, val_loss={ckpt['val_loss']:.4f}, size={size_mb:.1f}MB")
+        
+        # Best model checkpoints
+        print("\n🏆 Best Model Checkpoints:")
+        print("-" * 80)
         best_path = self.checkpoint_dir / 'best_model.pt'
         if best_path.exists():
             ckpt = torch.load(best_path, map_location='cpu', weights_only=False)
-            print(f"  best:   step={ckpt['step']}, val_loss={ckpt['val_loss']:.4f}")
+            size_mb = best_path.stat().st_size / (1024**2)
+            print(f"  best_model.pt:          step={ckpt['step']:,}, val_loss={ckpt['val_loss']:.4f}, size={size_mb:.1f}MB")
         
-        # Epoch checkpoints
-        epoch_ckpts = sorted(self.checkpoint_dir.glob('epoch_*.pt'))
-        if epoch_ckpts:
-            print("\nEpoch checkpoints:")
-            for path in epoch_ckpts:
-                ckpt = torch.load(path, map_location='cpu', weights_only=False)
-                print(f"  {path.name}: step={ckpt['step']}, val_loss={ckpt['val_loss']:.4f}")
+        best_backup_path = self.checkpoint_dir / 'best_model_backup.pt'
+        if best_backup_path.exists():
+            ckpt = torch.load(best_backup_path, map_location='cpu', weights_only=False)
+            size_mb = best_backup_path.stat().st_size / (1024**2)
+            print(f"  best_model_backup.pt:   step={ckpt['step']:,}, val_loss={ckpt['val_loss']:.4f}, size={size_mb:.1f}MB")
+        
+        best_previous_path = self.checkpoint_dir / 'best_model_previous.pt'
+        if best_previous_path.exists():
+            ckpt = torch.load(best_previous_path, map_location='cpu', weights_only=False)
+            size_mb = best_previous_path.stat().st_size / (1024**2)
+            print(f"  best_model_previous.pt: step={ckpt['step']:,}, val_loss={ckpt['val_loss']:.4f}, size={size_mb:.1f}MB")
         
         # Rolling checkpoints
         rolling_ckpts = sorted(self.checkpoint_dir.glob('rolling_step_*.pt'))
         if rolling_ckpts:
-            print("\nRolling checkpoints (last 10):")
+            print(f"\n🔄 Rolling Checkpoints ({len(rolling_ckpts)} total, showing last 10):")
+            print("-" * 80)
             for path in rolling_ckpts[-10:]:
                 ckpt = torch.load(path, map_location='cpu', weights_only=False)
-                print(f"  {path.name}: step={ckpt['step']}, val_loss={ckpt['val_loss']:.4f}")
+                size_mb = path.stat().st_size / (1024**2)
+                print(f"  {path.name}: step={ckpt['step']:,}, val_loss={ckpt['val_loss']:.4f}, size={size_mb:.1f}MB")
+            
+            rolling_backup_path = self.checkpoint_dir / 'rolling_last_backup.pt'
+            if rolling_backup_path.exists():
+                ckpt = torch.load(rolling_backup_path, map_location='cpu', weights_only=False)
+                size_mb = rolling_backup_path.stat().st_size / (1024**2)
+                print(f"  rolling_last_backup.pt:  step={ckpt['step']:,}, val_loss={ckpt['val_loss']:.4f}, size={size_mb:.1f}MB (backup)")
         
-        print("-" * 60)
+        # Emergency checkpoints
+        emergency_ckpts = sorted(self.checkpoint_dir.glob('emergency_step_*.pt'))
+        if emergency_ckpts:
+            print(f"\n🚨 Emergency Checkpoints ({len(emergency_ckpts)} total):")
+            print("-" * 80)
+            for path in emergency_ckpts:
+                ckpt = torch.load(path, map_location='cpu', weights_only=False)
+                size_mb = path.stat().st_size / (1024**2)
+                from datetime import datetime
+                timestamp = datetime.fromtimestamp(ckpt['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
+                print(f"  {path.name}: step={ckpt['step']:,}, val_loss={ckpt['val_loss']:.4f}, saved={timestamp}, size={size_mb:.1f}MB")
+        
+        # Epoch checkpoints
+        epoch_ckpts = sorted(self.checkpoint_dir.glob('epoch_*.pt'))
+        if epoch_ckpts:
+            print(f"\n📅 Epoch Checkpoints ({len(epoch_ckpts)} total):")
+            print("-" * 80)
+            for path in epoch_ckpts:
+                ckpt = torch.load(path, map_location='cpu', weights_only=False)
+                size_mb = path.stat().st_size / (1024**2)
+                print(f"  {path.name}: step={ckpt['step']:,}, epoch={ckpt['epoch']}, val_loss={ckpt['val_loss']:.4f}, size={size_mb:.1f}MB")
+        
+        # Disk usage summary
+        disk_usage = self._get_disk_usage()
+        print(f"\n📦 Total Storage: {disk_usage:.2f} GB")
+        print("="*80 + "\n")
 
 
 class Trainer:
@@ -322,6 +539,7 @@ class Trainer:
                         train_loader=self.train_loader,
                         val_loader=self.val_loader,
                         args_dict=self.args_dict,
+                        is_emergency=True,  # Mark as emergency checkpoint
                     )
                     print("✓ Emergency checkpoint saved. Exiting...")
                 if self.ddp:
@@ -607,6 +825,7 @@ def get_args():
     parser.add_argument("--eval_freq", type=int, default=250)
     parser.add_argument("--checkpoint_freq", type=int, default=250, help="save checkpoint every N steps")
     parser.add_argument("--keep_checkpoints", type=int, default=10, help="number of rolling checkpoints to keep")
+    parser.add_argument("--keep_emergency_checkpoints", type=int, default=10, help="number of emergency checkpoints to keep")
     parser.add_argument("--seed", type=int, default=1337, help="Random seed for reproducibility")
     parser.add_argument("--logdir", type=str, default="./logs/")
     parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints/", help="directory to save checkpoints")
@@ -660,10 +879,13 @@ def main():
     device_type = 'cuda' if device.startswith('cuda') else 'cpu'
 
     # Initialize checkpoint manager
+    # If resuming, allow using existing checkpoint directory
     checkpoint_manager = CheckpointManager(
         checkpoint_dir=args.checkpoint_dir,
         keep_last_n=args.keep_checkpoints,
-        master_process=master_process
+        keep_emergency_n=args.keep_emergency_checkpoints,
+        master_process=master_process,
+        allow_resume=(args.resume is not None)  # Allow existing checkpoints if resuming
     )
     
     # List checkpoints and exit if requested
