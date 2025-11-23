@@ -75,12 +75,35 @@ def inference(args=None):
         device = 'mps'    # for apple macbook GPUs
     print(f'using device: {device}')
 
-    model_path = './logs/model_95364.pt'
+    model_path = './checkpoints/best_model.pt'
     checkpoint = torch.load(model_path, weights_only=False)
     print(f"loaded model from: {model_path}")
-    # print(checkpoint['model'].keys())
+    
+    # Handle both old checkpoints (without 'config') and new ones (with 'config')
+    if 'config' in checkpoint:
+        # New checkpoint format - use saved config
+        config = checkpoint['config']
+        print("✓ Loaded model config from checkpoint")
+    elif 'args' in checkpoint:
+        # Old checkpoint format - reconstruct config from args
+        print("⚠️  Old checkpoint format detected, reconstructing config from args")
+        ckpt_args = checkpoint['args']
+        config = GPTConfig(
+            vocab_size=50304,  # Same as training
+            context_length=ckpt_args.get('context_length', 1024),
+            num_layers=ckpt_args.get('num_layers', 12),
+            num_heads=ckpt_args.get('num_heads', 12),
+            embd_size=ckpt_args.get('embd_size', 768)
+        )
+    else:
+        # Fallback - use default config
+        print("⚠️  No config or args found in checkpoint, using default GPTConfig")
+        config = GPTConfig()
+    
+    print(f"Model config: vocab_size={config.vocab_size}, context_length={config.context_length}, "
+          f"num_layers={config.num_layers}, num_heads={config.num_heads}, embd_size={config.embd_size}")
 
-    model = GPT(config=checkpoint['config'])
+    model = GPT(config=config)
     model.load_state_dict(checkpoint['model'])
     model = model.to(device)
     token_encoder = tiktoken.get_encoding('gpt2')

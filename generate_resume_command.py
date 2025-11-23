@@ -322,3 +322,4 @@ cd /home/kecso/Documents/workspace/training/gpt-2/gpt2-from-scratch
 if __name__ == "__main__":
     main()
 
+

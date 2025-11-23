@@ -173,6 +173,7 @@ class CheckpointManager:
             'rng_state': rng_state,
             'dataloader_state': dataloader_state,
             'args': args_dict,
+            'config': model.config,  # Save model config for inference
             'timestamp': time.time(),
             'checkpoint_type': 'emergency' if is_emergency else 'regular',
         }

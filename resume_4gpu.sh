@@ -29,3 +29,4 @@ fi
 # Launch with torchrun
 torchrun --standalone --nproc_per_node=4 $CMD
 
+
