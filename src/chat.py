@@ -95,9 +95,8 @@ def generate_response(model, tokenizer, instruction, max_new_tokens=150,
     return response
 
 
-def interactive_chat(checkpoint_path, device='cuda', max_tokens=200, 
-                    temperature=0.7, top_k=50):
-    """Run interactive chat loop with conversation history"""
+def interactive_chat(checkpoint_path, device='cuda'):
+    """Run interactive chat loop"""
     
     # Load model
     model, config = load_model(checkpoint_path, device)
@@ -105,20 +104,14 @@ def interactive_chat(checkpoint_path, device='cuda', max_tokens=200,
     # Load tokenizer
     tokenizer = tiktoken.get_encoding('gpt2')
     
-    # Initialize conversation history
-    conversation_history = []
-    
     # Print instructions
     print("="*80)
     print("Interactive Chat with Instruction-Tuned GPT-2")
     print("="*80)
     print("Type your instructions or questions below.")
-    print("The assistant will remember your conversation!")
-    print()
     print("Commands:")
     print("  'exit' or 'quit' - Exit the chat")
     print("  'clear' - Clear conversation history")
-    print("  'history' - Show conversation history")
     print("="*80)
     print()
     
@@ -134,43 +127,25 @@ def interactive_chat(checkpoint_path, device='cuda', max_tokens=200,
                 break
             
             if user_input.lower() == 'clear':
-                conversation_history = []
                 print("\n" * 50)  # Clear screen
                 print("="*80)
-                print("Conversation history cleared")
+                print("Conversation cleared")
                 print("="*80)
-                continue
-            
-            if user_input.lower() == 'history':
-                if not conversation_history:
-                    print("\n(No conversation history yet)")
-                else:
-                    print("\n" + "="*80)
-                    print("Conversation History")
-                    print("="*80)
-                    for i, (user_msg, assistant_msg) in enumerate(conversation_history, 1):
-                        print(f"\n[{i}] You: {user_msg}")
-                        print(f"    Assistant: {assistant_msg[:100]}{'...' if len(assistant_msg) > 100 else ''}")
-                    print("="*80)
                 continue
             
             if not user_input.strip():
                 continue
             
-            # Generate response with conversation history
+            # Generate response
             print("\n\033[1;32mAssistant:\033[0m ", end='', flush=True)
             response = generate_response(
                 model, tokenizer, user_input,
-                conversation_history=conversation_history,
-                max_new_tokens=max_tokens,
-                temperature=temperature,
-                top_k=top_k,
+                max_new_tokens=200,
+                temperature=0.7,
+                top_k=50,
                 device=device
             )
             print(response)
-            
-            # Add to conversation history
-            conversation_history.append((user_input, response))
             
         except KeyboardInterrupt:
             print("\n\nInterrupted. Type 'exit' to quit or continue chatting.")
@@ -201,14 +176,8 @@ def main():
         print("⚠️  CUDA not available, falling back to CPU")
         args.device = 'cpu'
     
-    # Run chat with conversation history
-    interactive_chat(
-        checkpoint_path=args.checkpoint,
-        device=args.device,
-        max_tokens=args.max_tokens,
-        temperature=args.temperature,
-        top_k=args.top_k
-    )
+    # Run chat
+    interactive_chat(args.checkpoint, args.device)
 
 
 if __name__ == "__main__":
