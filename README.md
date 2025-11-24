@@ -11,6 +11,8 @@ This project reproduces the GPT-2 model in pytorch and trains it from scratch on
 - **Dataset Shuffling:** Automatic shard shuffling between epochs for better generalization.
 - **Customizable Training:** Hyperparameters are configurable via the command line and can be easily modified.
 - **Multi-GPU Training Support:** Training can be performed using multiple GPUs using PyTorch Distributed Data Parallel (DDP).
+- **Instruction Fine-Tuning:** Fine-tune the pre-trained model on instruction-response pairs to create a chat assistant.
+- **Hugging Face Export:** Convert checkpoints to Hugging Face safetensors format for easy deployment.
 
 
 ## Repository Structure
@@ -86,6 +88,8 @@ For more details on the training process and customizing hyperparameters, refer 
 - **Complete Guide:** [`CURRENT_PROJECT_STATUS.md`](CURRENT_PROJECT_STATUS.md)
 - **Checkpointing:** [`CHECKPOINTING_GUIDE.md`](CHECKPOINTING_GUIDE.md)
 - **Monitoring:** [`TENSORBOARD_GUIDE.md`](TENSORBOARD_GUIDE.md)
+- **Instruction Fine-Tuning:** [`INSTRUCT_TRAINING_GUIDE.md`](INSTRUCT_TRAINING_GUIDE.md)
+- **Hugging Face Export:** [`CONVERT_TO_HF_GUIDE.md`](CONVERT_TO_HF_GUIDE.md)
 
 Training was performed from scratch using multiple GPUs with PyTorch's DDP framework.
 
@@ -94,10 +98,41 @@ After training the model, you can generate text based on custom prompts. Use the
 
 Run the inference script from the command line with the following syntax:
 ```bash
-python3 inference.py --prompt="I am a AI and robotics enthusiast, I want to" --max_tokens=50 --num_seq=5
+python3 src/inference.py --prompt="I am a AI and robotics enthusiast, I want to" --max_tokens=50 --num_seq=5
 ```
 
 This command will output 5 unique text sequences, each starting with the provided prompt and continuing for up to 50 tokens.
+
+### Instruction Fine-Tuning
+
+After pre-training, you can fine-tune the model on instruction-response pairs to create a chat assistant:
+
+```bash
+# Prepare instruction dataset
+python src/prepare_instruct_dataset.py
+
+# Start fine-tuning
+./start_instruct_training.sh
+
+# Chat with your model
+./chat.sh
+```
+
+See [`INSTRUCT_TRAINING_GUIDE.md`](INSTRUCT_TRAINING_GUIDE.md) for complete instructions.
+
+### Export to Hugging Face Format
+
+Convert your trained model to Hugging Face safetensors format:
+
+```bash
+# Convert instruction fine-tuned model (recommended: bfloat16)
+python src/convert_to_safetensor.py checkpoints_instruct/latest.pt --output_dir hf_model
+
+# Test the conversion
+python test_hf_conversion.py
+```
+
+See [`CONVERT_TO_HF_GUIDE.md`](CONVERT_TO_HF_GUIDE.md) for details.
 
 
 ### Model Architecture
