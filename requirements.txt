@@ -2,3 +2,5 @@ numpy
 torch
 tiktoken
 transformers
+datasets
+tensorboard
